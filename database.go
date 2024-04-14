@@ -11,6 +11,13 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+func downloadDatabase(url, path string) (*sql.DB, error) {
+	if err := download(url, path); err != nil {
+		return nil, err
+	}
+	return openDatabase(path)
+}
+
 func openDatabase(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {

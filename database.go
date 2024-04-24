@@ -1,14 +1,14 @@
 package main
 
 import (
-    "database/sql"
-    "fmt"
-    "io"
-    "log"
-    "net/http"
-    "os"
+	"database/sql"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
 
-    _ "github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func downloadDatabase(url, path string) (*sql.DB, error) {

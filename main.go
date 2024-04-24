@@ -1,15 +1,16 @@
 package main
 
 import (
-    "fmt"
-    "log"
-    "net"
-    "net/http"
-    "os"
-    "path/filepath"
-    "strconv"
-    "strings"
-    "unicode"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"unicode"
 )
 
 func LOG(format string, args ...interface{}) {
@@ -102,7 +103,11 @@ func (c Client) Reduce(key string, values <-chan string, output chan<- Pair) err
     return nil
 }
 
+func use(_... interface{}){}
+
 func main() {
+    use(use)
+    runtime.GOMAXPROCS(1)
     m := 10
     r := 5
     source := "source.db"
@@ -177,7 +182,7 @@ func main() {
             log.Fatalf("processing map task %d: %v", i, err)
         }
         for _, reduce := range reduceTasks {
-            reduce.SourceHosts[i] = myAddress
+            reduce.SourceHosts[i] = makeURL(myAddress, mapOutputFile(i, reduce.TaskId))
         }
     }
 
@@ -189,4 +194,15 @@ func main() {
     }
 
     // gather outputs into final target.db file
+    target, err := createDatabase("target.db")
+    if err != nil {
+        log.Fatalf("creating target database: %v", err)
+    }
+    defer target.Close()
+    for i := 0; i < r; i++ {
+        err := gatherInto(target, filepath.Join(tempdir, reduceOutputFile(i)))
+        if err != nil {
+            log.Fatalf("gathering reduce output %d: %v", i, err)
+        }
+    }
 }

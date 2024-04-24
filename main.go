@@ -17,7 +17,7 @@ func LOG(format string, args ...interface{}) {
 }
 
 func ERR(format string, args ...interface{}) {
-    log.Printf(format, args...)
+    log.Printf("\033[91m" + format + "\033[0m", args...)
 }
 
 type MapTask struct {

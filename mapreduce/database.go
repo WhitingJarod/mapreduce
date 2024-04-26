@@ -1,4 +1,4 @@
-package main
+package mapreduce
 
 import (
 	"database/sql"

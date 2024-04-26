@@ -1,16 +1,13 @@
 package mapreduce
 
 import (
-	"fmt"
-	"log"
-	"net"
-	"net/http"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
-	"unicode"
+    "flag"
+    "fmt"
+    "log"
+    "net"
+    "net/http"
+    "os"
+    "path/filepath"
 )
 
 func LOG(format string, args ...interface{}) {
@@ -71,7 +68,93 @@ func getLocalAddress() string {
 
 func use(_... interface{}){}
 
+func do_master(num_map_tasks, num_reduce_tasks int, input_file, output_file, my_address, my_port, temp_dir string) {
+    LOG("master mode")
+    LOG("num_map_tasks: %d", num_map_tasks)
+    LOG("num_reduce_tasks: %d",num_reduce_tasks)
+    LOG("input_file: %s", input_file)
+    LOG("output_file: %s", output_file)
+    LOG("my_address: %s",my_address)
+    LOG("my_port: %s", my_port)
+
+    // The master node needs to do the following:
+    // 1. Split the input file and start an HTTP server to serve source chunks to map workers.
+    split_paths := make([]string, num_map_tasks)
+    for i := 0; i < num_map_tasks; i++ {
+        split_paths[i] = filepath.Join(temp_dir, mapSourceFile(i))
+    }
+    if err := splitDatabase(input_file, split_paths); err != nil {
+        ERR("splitDatabase: %v", err)
+        return
+    }
+    myAddress := net.JoinHostPort(my_address, my_port)
+    LOG("starting http server at %s", myAddress)
+    listener, err := net.Listen("tcp", myAddress)
+    if err != nil {
+        ERR("Listen error on address %s: %v", myAddress, err)
+        return
+    }
+    http.Handle("/data/", http.StripPrefix("/data", http.FileServer(http.Dir(temp_dir))))
+    go func() {
+        if err := http.Serve(listener, nil); err != nil {
+            ERR("Serve error: %v", err)
+        }
+    }()
+
+    // 2. Generate the full set of map tasks and reduce tasks. Note that reduce
+    // tasks will be incomplete initially, because they require a list of the
+    // hosts that handled each map task.
+    map_tasks := make([]*MapTask, num_map_tasks)
+    for i := 0; i < num_map_tasks; i++ {
+        map_tasks[i] = &MapTask{
+            NumMapTasks: num_map_tasks,
+            NumReduceTasks: num_reduce_tasks,
+            TaskId: i,
+            SourceHost: myAddress,
+        }
+    }
+
+    reduce_tasks := make([]*ReduceTask, num_reduce_tasks)
+    for i := 0; i < num_reduce_tasks; i++ {
+        reduce_tasks[i] = &ReduceTask{
+            NumMapTasks: num_map_tasks,
+            NumReduceTasks: num_reduce_tasks,
+            TaskId: i,
+            SourceHosts: make([]string, num_map_tasks),
+        }
+    }
+
+    // 3. Create and start an RPC server to handle incoming client requests.
+    // Note that it can use the same HTTP server that shares static files.
+}
+
+func do_client(master_address, master_port, my_address, my_port, temp_dir string) {
+    LOG("client mode")
+    LOG("master_address: %s", master_address)
+    LOG("master_port: %s", master_port)
+    LOG("my_address: %s", my_address)
+    LOG("my_port: %s", my_port)
+}
+
 func Start() {
+    use(use)
+
+    is_master := flag.Bool("master", false, "master mode")
+    num_map_tasks := flag.Int("m", 10, "number of map tasks (inherited from master)")
+    num_reduce_tasks := flag.Int("r", 5, "number of reduce tasks (inherited from master)")
+    input_file := flag.String("source", "source.db", "source database file (if master)")
+    output_file := flag.String("target", "target.db", "target database file (if master)")
+    master_address := flag.String("address", getLocalAddress(), "address of the master node")
+    master_port := flag.String("port", "3410", "port of the master node")
+    my_address := getLocalAddress()
+    my_port := flag.String("p", "3410", "port of the current node")
+    temp_dir := flag.String("temp", os.TempDir(), "temporary directory for mapreduce")
+
+    if *is_master {
+        do_master(*num_map_tasks, *num_reduce_tasks, *input_file, *output_file, my_address, *my_port, *temp_dir)
+    } else {
+        do_client(*master_address, *master_port, my_address, *my_port, *temp_dir)
+    }
 
 //     use(use)
 //     runtime.GOMAXPROCS(1)

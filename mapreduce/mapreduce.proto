@@ -2,8 +2,10 @@ syntax = "proto3";
 
 package mapreduce;
 
+option go_package = "./proto";
+
 service Master {
-    rpc RequestTask (None) returns (Task) {}
+    rpc RequestTask (WorkerStatus) returns (Task) {}
 }
 
 message None {}
@@ -31,6 +33,7 @@ message Task {
     oneof task {
         MapTask map_task = 1;
         ReduceTask reduce_task = 2;
+        None none = 3;
     }
 }
 

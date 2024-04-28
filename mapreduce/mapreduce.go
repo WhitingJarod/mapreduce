@@ -1,18 +1,20 @@
 package mapreduce
 
 import (
-    "context"
-    "flag"
-    "fmt"
-    "log"
-    "net"
-    "net/http"
-    "os"
-    "path/filepath"
+	"context"
+	"database/sql"
+	"flag"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sync"
 
-    pb "mapreduce/proto"
+	pb "mapreduce/proto"
 
-    "google.golang.org/grpc"
+	"google.golang.org/grpc"
 )
 
 func LOG(format string, args ...interface{}) {
@@ -71,12 +73,86 @@ func getLocalAddress() string {
     return localaddress
 }
 
+type Result struct {
+    db *sql.DB
+    err error
+}
 
 type ProtocolServer struct {
     pb.UnimplementedMasterServer
+    lock sync.Mutex
+    num_map_tasks, num_reduce_tasks int
+    input_file, output_file, my_address, my_port, temp_dir string
+    map_tasks []*pb.MapTask
+    reduce_tasks []*pb.ReduceTask
+    map_tasks_completed, reduce_tasks_completed int
+    merge_urls []string
+    result chan Result
 }
 
 func (s *ProtocolServer) RequestTask(ctx context.Context, req *pb.WorkerStatus) (*pb.Task, error) {
+    s.lock.Lock()
+
+    switch v := req.Status.(type) {
+    case *pb.WorkerStatus_MapTaskStatus:
+            if v.MapTaskStatus.ErrorMessage != "" {
+                s.lock.Unlock()
+                s.result <- Result{nil, fmt.Errorf("map task %d: %s", req.TaskId, v.MapTaskStatus.ErrorMessage)}
+                return &pb.Task{}, nil
+            }
+            for i := 0; i < s.num_reduce_tasks; i++ {
+                s.reduce_tasks[i].SourceHosts = append(s.reduce_tasks[i].SourceHosts, v.MapTaskStatus.TaskAddress)
+            }
+            s.map_tasks_completed++
+    case *pb.WorkerStatus_ReduceTaskStatus:
+            if v.ReduceTaskStatus.ErrorMessage != "" {
+                s.lock.Unlock()
+                s.result <- Result{nil, fmt.Errorf("reduce task %d: %s", req.TaskId, v.ReduceTaskStatus.ErrorMessage)}
+                return &pb.Task{}, nil
+            }
+            s.merge_urls = append(s.merge_urls, v.ReduceTaskStatus.TaskAddress)
+            s.reduce_tasks_completed++
+            if s.reduce_tasks_completed == s.num_reduce_tasks {
+                db, err := createDatabase(s.output_file)
+                if err != nil {
+                    s.lock.Unlock()
+                    s.result <- Result{nil, fmt.Errorf("creating target database: %v", err)}
+                    return &pb.Task{}, nil
+                }
+                for _, addr := range s.merge_urls {
+                    if err := gatherInto(db, addr); err != nil {
+                        s.lock.Unlock()
+                        s.result <- Result{nil, fmt.Errorf("gathering reduce output: %v", err)}
+                        return &pb.Task{}, nil
+                    }
+                }
+                s.lock.Unlock()
+                s.result <- Result{db, nil}
+                return &pb.Task{}, nil
+            }
+    }
+
+    if len(s.map_tasks) > 0 {
+        task := s.map_tasks[0]
+        s.map_tasks = s.map_tasks[1:]
+        s.lock.Unlock()
+        return &pb.Task{
+            Task: &pb.Task_MapTask{
+                MapTask: task,
+            },
+        }, nil
+    }
+    if len(s.reduce_tasks) > 0 && s.map_tasks_completed == s.num_map_tasks {
+        task := s.reduce_tasks[0]
+        s.reduce_tasks = s.reduce_tasks[1:]
+        s.lock.Unlock()
+        return &pb.Task{
+            Task: &pb.Task_ReduceTask{
+                ReduceTask: task,
+            },
+        }, nil
+    }
+
     return &pb.Task{}, nil
 }
 
@@ -118,31 +194,48 @@ func do_master(num_map_tasks, num_reduce_tasks int, input_file, output_file, my_
     // 2. Generate the full set of map tasks and reduce tasks. Note that reduce
     // tasks will be incomplete initially, because they require a list of the
     // hosts that handled each map task.
-    map_tasks := make([]*MapTask, num_map_tasks)
+    map_tasks := make([]*pb.MapTask, num_map_tasks)
     for i := 0; i < num_map_tasks; i++ {
-        map_tasks[i] = &MapTask{
-            NumMapTasks:    num_map_tasks,
-            NumReduceTasks: num_reduce_tasks,
-            TaskId:         i,
+        map_tasks[i] = &pb.MapTask{
+            NumMapTasks:    int32(num_map_tasks),
+            NumReduceTasks: int32(num_reduce_tasks),
+            TaskId:         int32(i),
             SourceHost:     myAddress,
         }
     }
 
-    reduce_tasks := make([]*ReduceTask, num_reduce_tasks)
+    reduce_tasks := make([]*pb.ReduceTask, num_reduce_tasks)
     for i := 0; i < num_reduce_tasks; i++ {
-        reduce_tasks[i] = &ReduceTask{
-            NumMapTasks:    num_map_tasks,
-            NumReduceTasks: num_reduce_tasks,
-            TaskId:         i,
+        reduce_tasks[i] = &pb.ReduceTask{
+            NumMapTasks:    int32(num_map_tasks),
+            NumReduceTasks: int32(num_reduce_tasks),
+            TaskId:         int32(i),
             SourceHosts:    make([]string, num_map_tasks),
         }
     }
 
     // 3. Create and start an RPC server to handle incoming client requests.
     // Note that it can use the same HTTP server that shares static files.
-    server := &ProtocolServer{}
+    result_chan := make(chan Result)
+    server := &ProtocolServer{
+        num_map_tasks: num_map_tasks,
+        num_reduce_tasks: num_reduce_tasks,
+        input_file: input_file,
+        output_file: output_file,
+        my_address: my_address,
+        my_port: my_port,
+        temp_dir: temp_dir,
+        map_tasks: map_tasks,
+        reduce_tasks: reduce_tasks,
+        result: result_chan,
+    }
     grpcServer := grpc.NewServer()
     pb.RegisterMasterServer(grpcServer, server)
+    grpcServer.Serve(listener)
+    result := <- result_chan
+    if result.err != nil {
+        ERR("master: %v", result.err)
+    }
 }
 
 func do_client(master_address, master_port, my_address, my_port, temp_dir string) {

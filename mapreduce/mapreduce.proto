@@ -11,7 +11,7 @@ service Master {
 message None {}
 
 message WorkerStatus {
-    int32 my_id = 1;
+    int32 task_id = 1;
     oneof status {
         MapTaskStatus map_task_status = 2;
         ReduceTaskStatus reduce_task_status = 3;
@@ -20,31 +20,33 @@ message WorkerStatus {
 }
 
 message MapTaskStatus {
-    repeated string intermediate_files = 1;
-    string error_message = 2;
+    string error_message = 1;
+    string task_address = 2;
 }
 
 message ReduceTaskStatus {
-    string output_file = 1;
-    string error_message = 2;
+    string error_message = 1;
+    string task_address = 2;
 }
 
 message Task {
+    string operation_hash = 1;
     oneof task {
-        MapTask map_task = 1;
-        ReduceTask reduce_task = 2;
-        None none = 3;
+        MapTask map_task = 2;
+        ReduceTask reduce_task = 3;
+        None none = 4;
     }
 }
 
 message MapTask {
-    string input_file = 1;
-    int32 map_task_id = 2;
-    int32 num_map_tasks = 3;
-    int32 num_reduce_tasks = 4;
-}
-message ReduceTask {
-    int32 reduce_task_id = 1;
+    int32 task_id = 1;
     int32 num_map_tasks = 2;
     int32 num_reduce_tasks = 3;
+    string source_host = 4;
+}
+message ReduceTask {
+    int32 task_id = 1;
+    int32 num_map_tasks = 2;
+    int32 num_reduce_tasks = 3;
+    repeated string source_hosts = 4;
 }
